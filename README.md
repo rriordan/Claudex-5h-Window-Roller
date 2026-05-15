@@ -6,75 +6,67 @@ the next reset happens during your work day, not right when you sit down.
 
 Toasts you if a rollover fails (auth expired, rate-limited, etc.).
 
-![tests](https://github.com/rriordan/Claudex-5h-Window-Roller/actions/workflows/test.yml/badge.svg)
+**One PowerShell file. No Python. No third-party modules. No admin.**
 
 ## One-click install
 
 Open PowerShell and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/rriordan/Claudex-5h-Window-Roller/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/rriordan/Claudex-5h-Window-Roller/main/claudex-roller.ps1 | iex
 ```
 
-That's it. The installer:
-
-1. Drops the script into `%USERPROFILE%\.claudex-5h-window-roller\`
-2. Installs the one Python dependency (`winotify`, user scope, no admin)
-3. Registers a Scheduled Task that runs at every logon
-4. Starts it
-
-Requires Python 3.11+ on PATH. No admin prompt; nothing to configure.
+That's it. The script downloads itself into `%USERPROFILE%\.claudex-5h-window-roller\`,
+registers a Scheduled Task that fires once a minute at logon, and starts it.
 
 ### Verify
 
 ```powershell
-python "$env:USERPROFILE\.claudex-5h-window-roller\claudex_roller.py" --status
+& "$env:USERPROFILE\.claudex-5h-window-roller\claudex-roller.ps1" -Status
 ```
 
-You should see something like:
+You should see:
 
 ```
-claude  4h12m left  (ping in 4h10m)
-codex   2h47m left  (ping in 2h46m)
+claude  4h12m left  (ping in 4h10m)  ->  C:\Users\rober\AppData\Roaming\Claude\claude-code\2.1.138\claude.exe
+codex   2h47m left  (ping in 2h46m)  ->  C:\Users\rober\AppData\Local\Programs\OpenAI\Codex\bin\codex.EXE
 ```
 
 Or if a CLI isn't installed:
 
 ```
-claude  4h12m left  (ping in 4h10m)
+claude  4h12m left  (ping in 4h10m)  ->  ...
 codex   not installed (skipped)
 ```
 
-The service writes a human-readable log:
-
-```
-14:23:01  starting — watching: claude, codex
-14:23:01  claude  → C:\Users\rober\AppData\Roaming\Claude\claude-code\2.1.138\claude.exe
-14:23:01  codex   → C:\Users\rober\AppData\Local\Programs\OpenAI\Codex\bin\codex.EXE
-14:23:01  claude  4h12m left
-14:23:01  codex   2h47m left
-19:09:34  claude  0m left
-19:09:34  claude  ✓ rolled
-```
-
-Tail it with:
+Tail the log:
 
 ```powershell
 Get-Content "$env:USERPROFILE\.claudex-5h-window-roller\service.log" -Wait
 ```
 
+Sample log output:
+
+```
+14:23:01  claude  4h12m left
+14:23:01  codex   2h47m left
+19:09:34  claude  0m left
+19:09:34  claude  OK rolled
+```
+
 ## Uninstall
 
 ```powershell
-irm https://raw.githubusercontent.com/rriordan/Claudex-5h-Window-Roller/main/uninstall.ps1 | iex
+& "$env:USERPROFILE\.claudex-5h-window-roller\claudex-roller.ps1" -Uninstall
 ```
 
 Removes the scheduled task. Logs/state at `~\.claudex-5h-window-roller\` are
-left behind — delete the folder yourself if you want a clean slate.
+left behind — delete the folder yourself for a clean slate.
 
 ## How it works
 
-Every 60s the service reads the latest timestamps from each CLI's local log:
+Every 60s the scheduled task wakes up, runs the script in `-Tick` mode, and
+exits. Each tick reads the latest timestamps from each CLI's local log:
 
 - **Claude Code:** `%USERPROFILE%\.claude\projects\**\*.jsonl` (`type:"user"` rows)
 - **Codex CLI:** `%USERPROFILE%\.codex\history.jsonl`
@@ -82,23 +74,32 @@ Every 60s the service reads the latest timestamps from each CLI's local log:
 It walks back through those timestamps, finds the start of the
 currently-open 5h window (the most recent message after a ≥5h gap), and ~90s
 before the window would close fires a tiny headless prompt
-(`claude -p ping` / `codex exec ping`) so the next 5h block opens seamlessly.
-If a ping fails or returns a rate-limit / auth error, you get a Windows toast.
+(`claude -p ping` / `codex exec --skip-git-repo-check ping`) so the next 5h
+block opens seamlessly. If a ping fails or returns a rate-limit / auth error,
+you get a Windows toast.
+
+There is no background process between ticks — just a one-shot scheduled task.
 
 ## Notes & limits
 
 - **Cost:** each ping is one very short prompt against your Claude Code /
-  Codex subscription quota — not API credits. Negligible in practice
-  (one prompt per 5h per CLI).
+  Codex subscription quota — not API credits. Negligible (one prompt per
+  5h per CLI).
 - **PC must be on.** The task does *not* wake the machine. If your computer
   is asleep, the window won't roll — that's usually fine since you weren't
-  using Claude/Codex anyway.
-- **Claude.ai web** is out of scope — there's no local log to read.
+  using Claude/Codex then anyway.
+- **Auto-detects executables.** Works whether `claude` is on PATH or only
+  installed via Claude Code desktop (`%APPDATA%\Claude\claude-code\<ver>\claude.exe`).
+- **Claude.ai web** is out of scope — no local log to read.
 
-## Run the tests
+## All flags
 
 ```powershell
-python -m unittest test_claudex_roller -v
+.\claudex-roller.ps1             # default: install
+.\claudex-roller.ps1 -Install    # explicit install
+.\claudex-roller.ps1 -Uninstall  # remove scheduled task
+.\claudex-roller.ps1 -Status     # print window state
+.\claudex-roller.ps1 -Tick       # run one cycle (internal; what the task runs)
 ```
 
 ## License
