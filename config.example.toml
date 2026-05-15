@@ -1,0 +1,24 @@
+# Copy to %USERPROFILE%\.claudex-5h-window-roller\config.toml and edit.
+# Any field you omit falls back to these defaults.
+
+[claude]
+enabled = true
+ping_command = ["claude", "-p", "ping"]
+
+[codex]
+enabled = true
+ping_command = ["codex", "exec", "ping"]
+
+[schedule]
+# Optional quiet hours (24h local time). No auto-pings during this range.
+# Toasts still fire. Leave both unset to ping around the clock.
+#
+# WARNING: setting quiet hours overnight defeats the purpose of this tool —
+# the 5h window will lapse before morning. Only set this if you know what
+# you're doing.
+# quiet_start = "23:30"
+# quiet_end   = "07:00"
+
+[notifications]
+toast_on_pause = true
+toast_on_rollover = false
