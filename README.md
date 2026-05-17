@@ -47,6 +47,18 @@ WSL — no WSL boot overhead). The 5-hour quota is per-account, so pinging via
 *any* working CLI advances the window everywhere (Claude Desktop, VS Code
 extension, WSL, etc.).
 
+### Automatic failover
+
+If an install fails or hangs twice in a row, the script skips it (marked `x`
+in `-Status`) and tries the next install in the priority list. After 60 minutes
+the failed install is given another chance — useful when failures are
+transient (auth blip, sandbox config change). Per-CLI timeouts:
+
+| Tool | Timeout | Why |
+|---|---|---|
+| claude | 30s | Headless `-p` prompt is fast (~5s typically) |
+| codex  | 120s | Codex sessions load skills, hooks and MCPs; can take 60-90s before responding |
+
 ### What gets detected
 
 For each tool, in priority order:
