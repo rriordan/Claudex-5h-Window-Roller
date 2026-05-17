@@ -25,19 +25,43 @@ registers a Scheduled Task that fires once a minute at logon, and starts it.
 & "$env:USERPROFILE\.claudex-5h-window-roller\claudex-roller.ps1" -Status
 ```
 
-You should see:
+You should see something like:
 
 ```
-claude  4h12m left  (ping in 4h10m)  ->  C:\Users\rober\AppData\Roaming\Claude\claude-code\2.1.138\claude.exe
-codex   2h47m left  (ping in 2h46m)  ->  C:\Users\rober\AppData\Local\Programs\OpenAI\Codex\bin\codex.EXE
+Detected installations:
+  * claude  Claude Code (2.1.138)         C:\Users\rober\AppData\Roaming\Claude\claude-code\2.1.138\claude.exe
+    claude  VS Code Insiders extension    C:\Users\rober\.vscode-insiders\extensions\anthropic.claude-code-2.1.142-win32-x64\resources\native-binary\claude.exe
+    claude  WSL (Ubuntu)                  /home/rober/.local/bin/claude
+  * codex   PATH                          C:\Users\rober\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe
+    codex   WSL (Ubuntu)                  /mnt/c/Users/rober/.codex/bin/wsl/codex
+    claude  Claude Desktop (Store/MSIX)   C:\Program Files\WindowsApps\Claude_1.7196.0.0_x64_...\app\Claude.exe
+    (GUI app — not used for pinging; quota is shared with claude CLI)
+
+Window state:
+  claude  4h12m left  (ping in 4h10m)  via Claude Code (2.1.138)
+  codex   2h47m left  (ping in 2h46m)  via PATH
 ```
 
-Or if a CLI isn't installed:
+A `*` marks the install used for actual pings (Windows CLIs are preferred over
+WSL — no WSL boot overhead). The 5-hour quota is per-account, so pinging via
+*any* working CLI advances the window everywhere (Claude Desktop, VS Code
+extension, WSL, etc.).
 
-```
-claude  4h12m left  (ping in 4h10m)  ->  ...
-codex   not installed (skipped)
-```
+### What gets detected
+
+For each tool, in priority order:
+
+1. **PATH** — `Get-Command claude` / `Get-Command codex`
+2. **Anthropic / OpenAI installers**
+   - Claude: `%APPDATA%\Claude\claude-code\<version>\claude.exe`
+   - Codex: `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe`
+3. **VS Code extension native binaries** (`anthropic.claude-code-*\resources\native-binary\claude.exe`)
+4. **Global package managers** — `%APPDATA%\npm\<tool>.cmd`, `%USERPROFILE%\.bun\bin\<tool>.exe`, `%LOCALAPPDATA%\pnpm\<tool>.cmd`
+5. **WSL distros** — `wsl -d <distro> -- command -v <tool>` (skips `docker-desktop`)
+
+**Logs are read from every source** — Windows-side `~/.claude/projects/` plus
+every WSL distro's `\\wsl.localhost\<distro>\home\*\.claude\projects\` —
+so the window inference stays accurate no matter where you actually use the CLI.
 
 Tail the log:
 
