@@ -8,12 +8,14 @@
 
     Once per minute (via Scheduled Task) it reads each CLI's local log,
     figures out when the current 5h window opened, and ~90s before the
-    window would close fires a tiny `ping` so the next 5h block opens
-    seamlessly. Shows a Windows toast if a ping fails.
+    window would close resumes the dedicated roller chat session to send
+    a tiny `ping`, keeping the next 5h block seamlessly open.
+    Shows a Windows toast if a ping fails.
 
 .PARAMETER Install
-    Drop the script into %USERPROFILE%\.claudex-5h-window-roller, register
-    the scheduled task, start it. Default action.
+    Scan for installed CLIs (asks the user if one isn't found), drop the
+    script into %USERPROFILE%\.claudex-5h-window-roller, register the
+    scheduled task, and start it.
 
 .PARAMETER Uninstall
     Unregister the scheduled task. Leaves logs/state intact.
@@ -59,18 +61,16 @@ $Script:PingTimeoutSec = @{
 $Script:MaxConsecFailures   = 2      # skip a source after this many consecutive failures
 $Script:FailureRetryMinutes = 60     # retry a failed source after this much time has passed
 
-$Script:TaskName       = 'Claudex5hWindowRoller'
-$Script:StateDir       = Join-Path $env:USERPROFILE '.claudex-5h-window-roller'
-$Script:LogFile        = Join-Path $Script:StateDir 'service.log'
-$Script:StateFile      = Join-Path $Script:StateDir 'state.json'
+$Script:TaskName        = 'Claudex5hWindowRoller'
+$Script:StateDir        = Join-Path $env:USERPROFILE '.claudex-5h-window-roller'
+$Script:LogFile         = Join-Path $Script:StateDir 'service.log'
+$Script:StateFile       = Join-Path $Script:StateDir 'state.json'
 $Script:InstalledScript = Join-Path $Script:StateDir 'claudex-roller.ps1'
 
-$Script:WslExe = 'C:\Windows\System32\wsl.exe'
-
+$Script:WslExe      = 'C:\Windows\System32\wsl.exe'
 $Script:RawScriptUrl = 'https://raw.githubusercontent.com/rriordan/Claudex-5h-Window-Roller/main/claudex-roller.ps1'
 
-# Cached during a single run (script re-launched each tick, so cache lives only
-# for the tick — that's the right scope; we don't want to ever hit stale data).
+# Cache WSL distro list for the duration of a single tick (script restarts each tick).
 $Script:WslDistroCache = $null
 
 # ---------- logging ----------
@@ -110,7 +110,6 @@ function Get-WslDistros {
 
 function Get-WslHomeDirs {
     param([string]$Distro)
-    # \\wsl.localhost\<distro>\home\<user> for every user dir; also \root if present
     $roots = @()
     foreach ($basePart in @('home', 'root')) {
         $path = "\\wsl.localhost\$Distro\$basePart"
@@ -215,12 +214,28 @@ function Get-WindowStart {
     return $windowStart
 }
 
-# ---------- install detection (all sources, for reporting) ----------
+# ---------- session ID tracking (claude only) ----------
+
+function Get-LatestClaudeSessionId {
+    param([datetime]$AfterUtc)
+    # The newest .jsonl file in Claude's project dirs modified after $AfterUtc
+    # carries the session UUID as its filename (BaseName).
+    $best      = $null
+    $afterLocal = $AfterUtc.ToLocalTime()
+    foreach ($root in (Get-ClaudeLogRoots)) {
+        Get-ChildItem -Path $root -Filter '*.jsonl' -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -gt $afterLocal } |
+            ForEach-Object {
+                if (-not $best -or $_.LastWriteTime -gt $best.LastWriteTime) { $best = $_ }
+            }
+    }
+    if ($best) { return $best.BaseName }
+    return $null
+}
+
+# ---------- install detection ----------
 
 function Find-ClaudeDesktopMsix {
-    # MSIX / Microsoft Store install. Path is under Program Files\WindowsApps\Claude_*
-    # We can't safely invoke this for ping (GUI app, no headless mode), but we
-    # surface it in -Status so the user knows it's detected.
     $hits = Get-ChildItem 'C:\Program Files\WindowsApps' -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue
     foreach ($h in $hits) {
         $exe = Join-Path $h.FullName 'app\Claude.exe'
@@ -230,8 +245,8 @@ function Find-ClaudeDesktopMsix {
 }
 
 function Get-CliInstallations {
-    # Return a list of all *pingable* installs found, in priority order.
-    # Each item: @{ name, source, kind, cmd, distro? }
+    # Priority order: WSL first (user preference), then Windows PATH, then
+    # tool-specific Windows install dirs, then global package managers.
     param([string]$Name)
     $pingArgs = if ($Name -eq 'claude') { @('-p','ping') } else { @('exec','--skip-git-repo-check','ping') }
     $found = New-Object System.Collections.Generic.List[object]
@@ -241,23 +256,41 @@ function Get-CliInstallations {
         if (-not $exe) { return }
         $key = "$kind|$distro|$exe"
         if (-not $seen.Add($key)) { return }
-        $cmd = if ($kind -eq 'wsl') {
-            @($Script:WslExe, '-d', $distro, '--', $exe) + $pingArgs
+        # baseCmd is everything up to and including the binary — used to build
+        # --resume commands without re-appending the ping args.
+        $baseCmd = if ($kind -eq 'wsl') {
+            @($Script:WslExe, '-d', $distro, '--', $exe)
         } else {
-            @($exe) + $pingArgs
+            @($exe)
         }
         $found.Add([pscustomobject]@{
-            name=$Name; source=$source; kind=$kind; cmd=$cmd; distro=$distro; exe=$exe
+            name    = $Name
+            source  = $source
+            kind    = $kind
+            cmd     = $baseCmd + $pingArgs
+            baseCmd = $baseCmd
+            distro  = $distro
+            exe     = $exe
         })
     }
 
-    # 1. Windows PATH
-    $cmd = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($cmd) { Add-Found 'PATH' $cmd.Source }
+    # 1. WSL — preferred; probe each distro
+    foreach ($distro in (Get-WslDistros)) {
+        $wslPath = $null
+        try {
+            $wslPath = & $Script:WslExe -d $distro -- bash -lc "command -v $Name 2>/dev/null" 2>$null
+            if ($wslPath) { $wslPath = ([string]$wslPath).Trim() }
+        } catch {}
+        if ($wslPath) { Add-Found "WSL ($distro)" $wslPath 'wsl' $distro }
+    }
 
-    # 2. Tool-specific Windows known paths
+    # 2. Windows PATH
+    $pathCmd = Get-Command $Name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pathCmd) { Add-Found 'PATH' $pathCmd.Source }
+
+    # 3. Tool-specific Windows install directories
     if ($Name -eq 'claude') {
-        # Anthropic installer (Claude Code) under %APPDATA%
+        # Anthropic installer — %APPDATA%\Claude\claude-code\<version>\claude.exe
         $base = Join-Path $env:APPDATA 'Claude\claude-code'
         if (Test-Path $base) {
             $latest = Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
@@ -267,7 +300,7 @@ function Get-CliInstallations {
                 if (Test-Path $exe) { Add-Found "Claude Code ($($latest.Name))" $exe }
             }
         }
-        # VS Code extension native binaries
+        # VS Code / VS Code Insiders extension native binaries
         foreach ($extRoot in @("$env:USERPROFILE\.vscode\extensions",
                                "$env:USERPROFILE\.vscode-insiders\extensions")) {
             if (Test-Path $extRoot) {
@@ -288,33 +321,16 @@ function Get-CliInstallations {
         if (Test-Path $exe) { Add-Found 'OpenAI Codex installer' $exe }
     }
 
-    # 3. Generic global package manager locations (both tools)
+    # 4. Generic package manager locations
     foreach ($p in @(
-        @{ src='npm global';   path=(Join-Path $env:APPDATA   "npm\$Name.cmd") },
-        @{ src='bun';          path=(Join-Path $env:USERPROFILE ".bun\bin\$Name.exe") },
-        @{ src='pnpm global';  path=(Join-Path $env:LOCALAPPDATA "pnpm\$Name.cmd") }
+        @{ src = 'npm global';  path = (Join-Path $env:APPDATA        "npm\$Name.cmd") },
+        @{ src = 'bun';         path = (Join-Path $env:USERPROFILE    ".bun\bin\$Name.exe") },
+        @{ src = 'pnpm global'; path = (Join-Path $env:LOCALAPPDATA   "pnpm\$Name.cmd") }
     )) {
         if (Test-Path $p.path) { Add-Found $p.src $p.path }
     }
 
-    # 4. WSL: probe each distro for the tool. Bounded by WSL boot time (~1-2s each).
-    foreach ($distro in (Get-WslDistros)) {
-        $wslPath = $null
-        try {
-            $wslPath = & $Script:WslExe -d $distro -- bash -lc "command -v $Name 2>/dev/null" 2>$null
-            if ($wslPath) { $wslPath = ([string]$wslPath).Trim() }
-        } catch {}
-        if ($wslPath) { Add-Found "WSL ($distro)" $wslPath 'wsl' $distro }
-    }
-
     return ,$found
-}
-
-function Resolve-CliInstallation {
-    param([string]$Name)
-    $installs = Get-CliInstallations $Name
-    if ($installs.Count -gt 0) { return $installs[0] }  # priority order = first
-    return $null
 }
 
 # ---------- ping ----------
@@ -322,10 +338,7 @@ function Resolve-CliInstallation {
 function Stop-CliProcessTree {
     param($Process)
     if (-not $Process) { return }
-    try {
-        # taskkill is the simplest reliable way to kill a process tree on Windows.
-        & taskkill.exe /T /F /PID $Process.Id 2>$null | Out-Null
-    } catch {
+    try { & taskkill.exe /T /F /PID $Process.Id 2>$null | Out-Null } catch {
         try { $Process.Kill() } catch {}
     }
 }
@@ -340,8 +353,6 @@ function Invoke-CliPing {
             -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile `
             -WindowStyle Hidden -PassThru
         if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-            # Process must die quickly — and so must its children (codex's
-            # sub-shells, hooks, etc). Kill the whole tree.
             try { Stop-CliProcessTree -Process $proc } catch {}
             return @{ ok = $false; reason = "timeout after ${TimeoutSec}s" }
         }
@@ -383,9 +394,7 @@ function Show-Toast {
         $xml.LoadXml($payload)
         $toast = New-Object Windows.UI.Notifications.ToastNotification($xml)
         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($Script:TaskName).Show($toast)
-    } catch {
-        # Toasts are best-effort; never fail a tick on a missing toast.
-    }
+    } catch {}
 }
 
 # ---------- state ----------
@@ -399,7 +408,34 @@ function Get-RollerState {
 
 function Save-RollerState {
     param($State)
-    $State | ConvertTo-Json | Set-Content -Path $Script:StateFile -Encoding utf8
+    $State | ConvertTo-Json -Depth 5 | Set-Content -Path $Script:StateFile -Encoding utf8
+}
+
+function Get-CliState {
+    param($State, [string]$Name)
+    $section = $State.PSObject.Properties[$Name].Value
+    if (-not $section) {
+        $section = [pscustomobject]@{
+            last_ping_at     = $null
+            ping_session_id  = $null
+            source_failures  = [pscustomobject]@{}
+        }
+        $State | Add-Member -NotePropertyName $Name -NotePropertyValue $section -Force
+    }
+    if (-not $section.PSObject.Properties['source_failures'].Value) {
+        $section | Add-Member -NotePropertyName 'source_failures' -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    if (-not $section.PSObject.Properties['ping_session_id']) {
+        $section | Add-Member -NotePropertyName 'ping_session_id' -NotePropertyValue $null -Force
+    }
+    return $section
+}
+
+function Get-UserDisabled {
+    param($State)
+    $v = $State.PSObject.Properties['user_disabled'].Value
+    if (-not $v) { return @() }
+    return @($v)
 }
 
 # ---------- format ----------
@@ -408,8 +444,7 @@ function Format-Duration {
     param([timespan]$Td)
     $totalSec = [int]$Td.TotalSeconds
     if ($totalSec -lt 0) {
-        $absMin = [math]::Floor([math]::Abs($Td.TotalSeconds) / 60)
-        return "-${absMin}m"
+        return "-$([int][math]::Floor([math]::Abs($Td.TotalSeconds) / 60))m"
     }
     $h = [int][math]::Floor($totalSec / 3600)
     $m = [int][math]::Floor(($totalSec % 3600) / 60)
@@ -417,46 +452,7 @@ function Format-Duration {
     return "${m}m"
 }
 
-# ---------- cli catalog ----------
-
-function Get-Clis {
-    foreach ($name in @('claude', 'codex')) {
-        $r = Resolve-CliInstallation $name
-        if ($r) {
-            [pscustomobject]@{
-                name      = $name
-                cmd       = $r.cmd
-                source    = $r.source
-                kind      = $r.kind
-                log       = $name
-                installed = $true
-            }
-        } else {
-            [pscustomobject]@{
-                name = $name; cmd = @(); source = '(none found)'; kind = $null; log = $name; installed = $false
-            }
-        }
-    }
-}
-
-# ---------- modes ----------
-
-function Get-CliState {
-    param($State, [string]$Name)
-    $section = $State.PSObject.Properties[$Name].Value
-    if (-not $section) {
-        $section = [pscustomobject]@{
-            last_ping_at    = $null
-            source_failures = [pscustomobject]@{}
-        }
-        $State | Add-Member -NotePropertyName $Name -NotePropertyValue $section -Force
-    }
-    # Ensure shape (json round-trip sometimes drops nested empties)
-    if (-not $section.PSObject.Properties['source_failures'].Value) {
-        $section | Add-Member -NotePropertyName 'source_failures' -NotePropertyValue ([pscustomobject]@{}) -Force
-    }
-    return $section
-}
+# ---------- fallback chain helpers ----------
 
 function Test-IsoSec {
     param([string]$Iso, [datetime]$Now, [int]$MaxAgeMinutes)
@@ -471,9 +467,6 @@ function Test-IsoSec {
 
 function Select-NextInstall {
     param([object[]]$Installs, $CliState, [datetime]$Now)
-    # Skip any install with >= MaxConsecFailures consecutive failures,
-    # unless its last_failure_at is older than FailureRetryMinutes (give it
-    # another chance — failures might be transient).
     $failures = $CliState.source_failures
     foreach ($install in $Installs) {
         $entry = $failures.PSObject.Properties[$install.source].Value
@@ -482,7 +475,7 @@ function Select-NextInstall {
         $stale = -not (Test-IsoSec -Iso $entry.last_failure_at -Now $Now -MaxAgeMinutes $Script:FailureRetryMinutes)
         if ($count -lt $Script:MaxConsecFailures -or $stale) { return $install }
     }
-    return $null  # all installs are currently flagged failing
+    return $null
 }
 
 function Record-PingFailure {
@@ -495,117 +488,165 @@ function Record-PingFailure {
 
 function Record-PingSuccess {
     param($CliState, [string]$Source)
-    # Clear failure record for this source on success.
     $existing = $CliState.source_failures.PSObject.Properties[$Source]
     if ($existing) { $CliState.source_failures.PSObject.Properties.Remove($Source) }
 }
 
+# ---------- tick ----------
+
 function Invoke-Tick {
     New-Item -ItemType Directory -Force -Path $Script:StateDir | Out-Null
-    $state = Get-RollerState
-    $now = (Get-Date).ToUniversalTime()
+    $state        = Get-RollerState
+    $userDisabled = Get-UserDisabled -State $state
+    $now          = (Get-Date).ToUniversalTime()
+
     foreach ($name in @('claude', 'codex')) {
+        if ($userDisabled -contains $name) { continue }
+
         $installs = Get-CliInstallations $name
         if ($installs.Count -eq 0) { continue }
+
         $cliState = Get-CliState -State $state -Name $name
 
-        # Window inference (logs read from every source — Windows + WSL)
+        # Window state
         $timestamps = if ($name -eq 'claude') { Get-ClaudeUserTimestamps } else { Get-CodexTimestamps }
         $start = Get-WindowStart -Timestamps $timestamps -Now $now
         if ($null -eq $start) {
-            $end = $now
+            $end       = $now
             $statusMsg = 'no open window'
         } else {
-            $end = $start.AddMinutes($Script:WindowMinutes)
+            $end       = $start.AddMinutes($Script:WindowMinutes)
             $statusMsg = "$(Format-Duration ($end - $now)) left"
         }
 
-        # Should we attempt a ping this tick?
+        # Debounce
         $shouldPing = ($now -ge $end.AddSeconds(-$Script:PingLeadSec))
-        if ($shouldPing -and $cliState.last_ping_at) {
-            if (Test-IsoSec -Iso $cliState.last_ping_at -Now $now -MaxAgeMinutes $Script:DebounceMinutes) {
-                $shouldPing = $false
-            }
+        if ($shouldPing -and (Test-IsoSec -Iso $cliState.last_ping_at -Now $now -MaxAgeMinutes $Script:DebounceMinutes)) {
+            $shouldPing = $false
         }
         if (-not $shouldPing) {
             Write-RollerLog -Cli $name -Message $statusMsg
             continue
         }
 
-        # Pick next viable install (skip ones that have failed recently)
+        # Pick install
         $install = Select-NextInstall -Installs $installs -CliState $cliState -Now $now
         if (-not $install) {
-            # All sources currently flagged failing — retry the top one anyway so
-            # we never silently give up.
             $install = $installs[0]
             Write-RollerLog -Cli $name -Message "$statusMsg  -> all sources flagged; retrying $($install.source)" -Warn
         } else {
             Write-RollerLog -Cli $name -Message "$statusMsg  -> rolling via $($install.source)..."
         }
 
+        # For claude: reuse the dedicated roller chat session to avoid per-ping
+        # session overhead and keep pings in one conversation thread.
+        $sessionId = $cliState.ping_session_id
+        if ($name -eq 'claude' -and $sessionId) {
+            # --resume <id> spliced in after the binary and before -p ping
+            $pingCmd = $install.baseCmd + @('--resume', $sessionId, '-p', 'ping')
+        } else {
+            $pingCmd = $install.cmd
+        }
+
         $cliState.last_ping_at = $now.ToString('o')
         $timeout = $Script:PingTimeoutSec[$name]
         if (-not $timeout) { $timeout = 30 }
-        $r = Invoke-CliPing -Cmd $install.cmd -TimeoutSec $timeout
+
+        $pingStartedAt = (Get-Date).ToUniversalTime()
+        $r = Invoke-CliPing -Cmd $pingCmd -TimeoutSec $timeout
+
         if ($r.ok) {
             Write-RollerLog -Cli $name -Message "OK rolled via $($install.source)"
             Record-PingSuccess -CliState $cliState -Source $install.source
-        } else {
-            Record-PingFailure -CliState $cliState -Source $install.source -Now $now
-            $failEntry = $cliState.source_failures.PSObject.Properties[$install.source].Value
-            $count = if ($failEntry) { [int]$failEntry.count } else { 1 }
-            if ($count -ge $Script:MaxConsecFailures) {
-                Write-RollerLog -Cli $name -Message "FAIL $($install.source): $($r.reason) (will try next source on subsequent tick)" -Warn
-            } else {
-                Write-RollerLog -Cli $name -Message "FAIL $($install.source): $($r.reason) (attempt $count/$($Script:MaxConsecFailures))" -Warn
+
+            # Capture / update session ID for claude so next ping resumes the
+            # same conversation thread.
+            if ($name -eq 'claude') {
+                $sid = Get-LatestClaudeSessionId -AfterUtc $pingStartedAt
+                if ($sid) {
+                    $cliState | Add-Member -NotePropertyName 'ping_session_id' -NotePropertyValue $sid -Force
+                }
             }
-            Show-Toast -Title "Ping failed: $name via $($install.source)" -Body $r.reason
+        } else {
+            # If we were trying to resume a session and it failed, the session
+            # may have expired. Clear the stored ID so the next ping starts
+            # fresh rather than re-failing on the same dead session.
+            if ($name -eq 'claude' -and $sessionId -and $r.reason -match 'exit [0-9]+|not found') {
+                Write-RollerLog -Cli $name -Message "session may be expired — clearing ID, will start fresh next ping" -Warn
+                $cliState | Add-Member -NotePropertyName 'ping_session_id' -NotePropertyValue $null -Force
+                # Don't count as a source failure — blame the stale session, not the install.
+            } else {
+                Record-PingFailure -CliState $cliState -Source $install.source -Now $now
+                $failEntry = $cliState.source_failures.PSObject.Properties[$install.source].Value
+                $count = if ($failEntry) { [int]$failEntry.count } else { 1 }
+                if ($count -ge $Script:MaxConsecFailures) {
+                    Write-RollerLog -Cli $name -Message "FAIL $($install.source): $($r.reason) (will try next source on subsequent tick)" -Warn
+                } else {
+                    Write-RollerLog -Cli $name -Message "FAIL $($install.source): $($r.reason) (attempt $count/$($Script:MaxConsecFailures))" -Warn
+                }
+                Show-Toast -Title "Ping failed: $name via $($install.source)" -Body $r.reason
+            }
         }
     }
     Save-RollerState -State $state
 }
 
+# ---------- status ----------
+
 function Show-Status {
-    $now = (Get-Date).ToUniversalTime()
+    $now   = (Get-Date).ToUniversalTime()
     $state = Get-RollerState
+    $userDisabled = Get-UserDisabled -State $state
 
     Write-Host ""
     Write-Host "Detected installations:" -ForegroundColor Cyan
     foreach ($name in @('claude','codex')) {
+        if ($userDisabled -contains $name) {
+            Write-Host ("  - {0,-6}  disabled (user said not installed — re-run -Install to reset)" -f $name) -ForegroundColor DarkGray
+            continue
+        }
         $installs = Get-CliInstallations $name
         if ($installs.Count -eq 0) {
-            Write-Host ("  {0,-6}  (none found)" -f $name) -ForegroundColor DarkGray
+            Write-Host ("  ? {0,-6}  (none found)" -f $name) -ForegroundColor Yellow
             continue
         }
         $cliState = Get-CliState -State $state -Name $name
-        $active = Select-NextInstall -Installs $installs -CliState $cliState -Now $now
+        $active   = Select-NextInstall -Installs $installs -CliState $cliState -Now $now
         foreach ($install in $installs) {
-            $isActive = $active -and ($install.source -eq $active.source)
-            $failEntry = $cliState.source_failures.PSObject.Properties[$install.source].Value
+            $isActive         = $active -and ($install.source -eq $active.source)
+            $failEntry        = $cliState.source_failures.PSObject.Properties[$install.source].Value
             $isFailingSkipped = $failEntry -and ([int]$failEntry.count -ge $Script:MaxConsecFailures) -and `
                 (Test-IsoSec -Iso $failEntry.last_failure_at -Now $now -MaxAgeMinutes $Script:FailureRetryMinutes)
-            $tag = if ($isFailingSkipped) { 'x' } elseif ($isActive) { '*' } else { ' ' }
-            $suffix = if ($failEntry) { "  (failures: $($failEntry.count))" } else { '' }
-            Write-Host ("  {0} {1,-6}  {2,-28}  {3}{4}" -f $tag, $name, $install.source, $install.exe, $suffix)
+            $tag    = if ($isFailingSkipped) { 'x' } elseif ($isActive) { '*' } else { ' ' }
+            $suffix = if ($failEntry) { "  (failures: $([int]$failEntry.count))" } else { '' }
+            Write-Host ("  {0} {1,-6}  {2,-32}  {3}{4}" -f $tag, $name, $install.source, $install.exe, $suffix)
+        }
+        $sessionId = $cliState.ping_session_id
+        if ($sessionId -and $name -eq 'claude') {
+            Write-Host ("      roller session: $sessionId") -ForegroundColor DarkGray
         }
     }
     $claudeDesktop = Find-ClaudeDesktopMsix
     if ($claudeDesktop) {
-        Write-Host ("    {0,-6}  {1,-28}  {2}" -f 'claude', 'Claude Desktop (Store/MSIX)', $claudeDesktop) -ForegroundColor DarkGray
-        Write-Host "    (GUI app — not used for pinging; quota is shared with claude CLI)" -ForegroundColor DarkGray
+        Write-Host ("    {0,-6}  {1,-32}  {2}" -f 'claude', 'Claude Desktop (Store/MSIX)', $claudeDesktop) -ForegroundColor DarkGray
+        Write-Host "    (GUI app — not pingable; quota shared with Claude Code CLI)" -ForegroundColor DarkGray
     }
-    Write-Host "  Legend: * = active source, x = currently skipped due to recent failures (will retry after $($Script:FailureRetryMinutes) min)" -ForegroundColor DarkGray
+    Write-Host "  Legend: * active source   x skipped (retry after $($Script:FailureRetryMinutes)m)   - disabled by user" -ForegroundColor DarkGray
 
     Write-Host ""
     Write-Host "Window state:" -ForegroundColor Cyan
     foreach ($name in @('claude','codex')) {
+        if ($userDisabled -contains $name) {
+            Write-Host ("  {0,-6}  disabled" -f $name) -ForegroundColor DarkGray
+            continue
+        }
         $installs = Get-CliInstallations $name
         if ($installs.Count -eq 0) {
             Write-Host ("  {0,-6}  no install found (skipped)" -f $name)
             continue
         }
         $cliState = Get-CliState -State $state -Name $name
-        $active = Select-NextInstall -Installs $installs -CliState $cliState -Now $now
+        $active   = Select-NextInstall -Installs $installs -CliState $cliState -Now $now
         if (-not $active) { $active = $installs[0] }
         $timestamps = if ($name -eq 'claude') { Get-ClaudeUserTimestamps } else { Get-CodexTimestamps }
         $start = Get-WindowStart -Timestamps $timestamps -Now $now
@@ -613,34 +654,72 @@ function Show-Status {
             Write-Host ("  {0,-6}  window closed (no recent activity)  via {1}" -f $name, $active.source)
             continue
         }
-        $end = $start.AddMinutes($Script:WindowMinutes)
-        $left = $end - $now
+        $end    = $start.AddMinutes($Script:WindowMinutes)
+        $left   = $end - $now
         $pingIn = $left - [timespan]::FromSeconds($Script:PingLeadSec)
         Write-Host ("  {0,-6}  {1} left  (ping in {2})  via {3}" -f $name, (Format-Duration $left), (Format-Duration $pingIn), $active.source)
     }
     Write-Host ""
 }
 
+# ---------- install ----------
+
 function Invoke-Install {
-    Write-Host "[1/3] Installing script to $Script:StateDir..." -ForegroundColor Cyan
+    # Step 0: scan for CLIs and ask about anything not found.
+    # This runs before the task is registered so user_disabled is persisted
+    # into state.json before the first tick fires.
+    Write-Host "Scanning for CLI installations..." -ForegroundColor Cyan
     New-Item -ItemType Directory -Force -Path $Script:StateDir | Out-Null
+    $state        = Get-RollerState     # preserve existing user_disabled if reinstalling
+    $userDisabled = @(Get-UserDisabled -State $state)
+
+    foreach ($name in @('claude', 'codex')) {
+        if ($userDisabled -contains $name) {
+            Write-Host ("  {0,-6}  already disabled (skipped)" -f $name) -ForegroundColor DarkGray
+            continue
+        }
+        $installs = Get-CliInstallations $name
+        if ($installs.Count -gt 0) {
+            Write-Host ("  {0,-6}  found {1} install(s) — using: {2}" -f $name, $installs.Count, $installs[0].source) -ForegroundColor Green
+        } else {
+            Write-Host ""
+            Write-Host ("  {0,-6}  not found automatically." -f $name) -ForegroundColor Yellow
+            $ans = 'n'
+            try { $ans = (Read-Host "         Is $name installed on this machine? [y/N]").Trim().ToLower() } catch {}
+            if ($ans -eq 'y' -or $ans -eq 'yes') {
+                Write-Host "         Make sure '$name' is on your PATH and re-run install." -ForegroundColor Yellow
+            } else {
+                Write-Host "         OK — $name will be ignored." -ForegroundColor DarkGray
+                $userDisabled += $name
+            }
+        }
+    }
+
+    # Persist updated user_disabled choice.
+    $state | Add-Member -NotePropertyName 'user_disabled' -NotePropertyValue $userDisabled -Force
+    Save-RollerState -State $state
+
+    Write-Host ""
+    Write-Host "[1/3] Installing script to $Script:StateDir..." -ForegroundColor Cyan
     if ($PSCommandPath -and (Test-Path $PSCommandPath) -and ($PSCommandPath -ne $Script:InstalledScript)) {
         Copy-Item -Path $PSCommandPath -Destination $Script:InstalledScript -Force
         Write-Host "      copied from $PSCommandPath"
     } elseif (-not (Test-Path $Script:InstalledScript)) {
         Write-Host "      downloading from $Script:RawScriptUrl"
         Invoke-WebRequest -Uri $Script:RawScriptUrl -OutFile $Script:InstalledScript -UseBasicParsing
+    } else {
+        Write-Host "      already in place at $Script:InstalledScript"
     }
 
     Write-Host "[2/3] Registering scheduled task..." -ForegroundColor Cyan
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
         -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Script:InstalledScript`" -Tick"
-    $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $logonTrigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $repeatTemplate = New-ScheduledTaskTrigger -Once -At (Get-Date) `
         -RepetitionInterval (New-TimeSpan -Minutes 1) `
         -RepetitionDuration ([timespan]::FromDays(3650))
     $logonTrigger.Repetition = $repeatTemplate.Repetition
-    $settings = New-ScheduledTaskSettingsSet `
+    $settings  = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -StartWhenAvailable `
         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
@@ -663,6 +742,8 @@ function Invoke-Install {
     Write-Host "  log:       $Script:LogFile"
     Write-Host "  uninstall: powershell -File `"$Script:InstalledScript`" -Uninstall"
 }
+
+# ---------- uninstall ----------
 
 function Invoke-Uninstall {
     if (Get-ScheduledTask -TaskName $Script:TaskName -ErrorAction SilentlyContinue) {
