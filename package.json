@@ -1,6 +1,6 @@
 {
   "name": "claudex-5h-window-roller",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Desktop control panel for keeping Codex and Claude 5-hour usage windows rolling.",
   "author": "Robert Riordan",
   "main": "out/main/index.js",
