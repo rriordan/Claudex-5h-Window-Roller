@@ -1,2 +1,7 @@
 *.log
 .claude/
+node_modules/
+out/
+dist/
+coverage/
+.vite/

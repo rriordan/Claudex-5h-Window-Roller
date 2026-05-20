@@ -8,6 +8,31 @@ Toasts you if a rollover fails (auth expired, rate-limited, etc.).
 
 **One PowerShell file. No Python. No third-party modules. No admin.**
 
+## Desktop app
+
+This repo also includes an Electron control panel for install, uninstall,
+enable, disable, tray monitoring, and notification preferences.
+
+```bash
+npm install
+npm run dev
+```
+
+Build app artifacts:
+
+```bash
+npm run build
+```
+
+Package a Windows installer:
+
+```bash
+npm run dist
+```
+
+The app is Windows-capable first. macOS and Linux launch paths are kept behind a
+platform adapter and currently show unsupported roller operations.
+
 ## One-click install
 
 Open PowerShell and run:
@@ -136,6 +161,9 @@ There is no background process between ticks — just a one-shot scheduled task.
 .\claudex-roller.ps1 -Uninstall  # remove scheduled task
 .\claudex-roller.ps1 -Status     # print window state
 .\claudex-roller.ps1 -Tick       # run one cycle (internal; what the task runs)
+.\claudex-roller.ps1 -Enable     # re-enable roller ticks
+.\claudex-roller.ps1 -Disable    # disable roller ticks without uninstalling
+.\claudex-roller.ps1 -JsonStatus # print machine-readable status for the app
 ```
 
 ## License
