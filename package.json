@@ -1,0 +1,53 @@
+{
+  "name": "claudex-5h-window-roller",
+  "version": "0.2.0",
+  "description": "Desktop control panel for keeping Codex and Claude 5-hour usage windows rolling.",
+  "author": "Robert Riordan",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "predist": "npm run build",
+    "dist": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.rriordan.claudex-5h-window-roller",
+    "productName": "Claudex 5h Window Roller",
+    "files": [
+      "out/**"
+    ],
+    "extraResources": [
+      {
+        "from": "claudex-roller.ps1",
+        "to": "claudex-roller.ps1"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    }
+  },
+  "dependencies": {
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "electron": "latest",
+    "electron-builder": "latest",
+    "electron-vite": "latest",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "latest",
+    "typescript": "latest",
+    "vite": "^6.4.1",
+    "vitest": "latest"
+  }
+}

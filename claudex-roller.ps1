@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Claudex 5h Window Roller — keep Claude Code & Codex CLI 5-hour usage
+    Claudex 5h Window Roller - keep Claude Code & Codex CLI 5-hour usage
     windows continuously rolling on Windows.
 
 .DESCRIPTION
@@ -38,7 +38,10 @@ param(
     [Parameter(ParameterSetName='Install')]   [switch]$Install,
     [Parameter(ParameterSetName='Uninstall')] [switch]$Uninstall,
     [Parameter(ParameterSetName='Status')]    [switch]$Status,
-    [Parameter(ParameterSetName='Tick')]      [switch]$Tick
+    [Parameter(ParameterSetName='Tick')]      [switch]$Tick,
+    [Parameter(ParameterSetName='Enable')]    [switch]$Enable,
+    [Parameter(ParameterSetName='Disable')]   [switch]$Disable,
+    [Parameter(ParameterSetName='JsonStatus')] [switch]$JsonStatus
 )
 
 $ErrorActionPreference = 'Stop'
@@ -256,7 +259,7 @@ function Get-CliInstallations {
         if (-not $exe) { return }
         $key = "$kind|$distro|$exe"
         if (-not $seen.Add($key)) { return }
-        # baseCmd is everything up to and including the binary — used to build
+        # baseCmd is everything up to and including the binary - used to build
         # --resume commands without re-appending the ping args.
         $baseCmd = if ($kind -eq 'wsl') {
             @($Script:WslExe, '-d', $distro, '--', $exe)
@@ -274,7 +277,7 @@ function Get-CliInstallations {
         })
     }
 
-    # 1. WSL — preferred; probe each distro
+    # 1. WSL - preferred; probe each distro
     foreach ($distro in (Get-WslDistros)) {
         $wslPath = $null
         try {
@@ -290,7 +293,7 @@ function Get-CliInstallations {
 
     # 3. Tool-specific Windows install directories
     if ($Name -eq 'claude') {
-        # Anthropic installer — %APPDATA%\Claude\claude-code\<version>\claude.exe
+        # Anthropic installer - %APPDATA%\Claude\claude-code\<version>\claude.exe
         $base = Join-Path $env:APPDATA 'Claude\claude-code'
         if (Test-Path $base) {
             $latest = Get-ChildItem $base -Directory -ErrorAction SilentlyContinue |
@@ -438,6 +441,19 @@ function Get-UserDisabled {
     return @($v)
 }
 
+function Get-RollerEnabled {
+    param($State)
+    $v = $State.PSObject.Properties['roller_enabled'].Value
+    if ($null -eq $v) { return $true }
+    return [bool]$v
+}
+
+function Set-RollerEnabled {
+    param($State, [bool]$Enabled)
+    $State | Add-Member -NotePropertyName 'roller_enabled' -NotePropertyValue $Enabled -Force
+    return $State
+}
+
 # ---------- format ----------
 
 function Format-Duration {
@@ -497,6 +513,10 @@ function Record-PingSuccess {
 function Invoke-Tick {
     New-Item -ItemType Directory -Force -Path $Script:StateDir | Out-Null
     $state        = Get-RollerState
+    if (-not (Get-RollerEnabled -State $state)) {
+        Write-RollerLog -Message 'roller disabled; skipping tick'
+        return
+    }
     $userDisabled = Get-UserDisabled -State $state
     $now          = (Get-Date).ToUniversalTime()
 
@@ -572,9 +592,9 @@ function Invoke-Tick {
             # may have expired. Clear the stored ID so the next ping starts
             # fresh rather than re-failing on the same dead session.
             if ($name -eq 'claude' -and $sessionId -and $r.reason -match 'exit [0-9]+|not found') {
-                Write-RollerLog -Cli $name -Message "session may be expired — clearing ID, will start fresh next ping" -Warn
+                Write-RollerLog -Cli $name -Message "session may be expired - clearing ID, will start fresh next ping" -Warn
                 $cliState | Add-Member -NotePropertyName 'ping_session_id' -NotePropertyValue $null -Force
-                # Don't count as a source failure — blame the stale session, not the install.
+                # Don't count as a source failure - blame the stale session, not the install.
             } else {
                 Record-PingFailure -CliState $cliState -Source $install.source -Now $now
                 $failEntry = $cliState.source_failures.PSObject.Properties[$install.source].Value
@@ -593,16 +613,107 @@ function Invoke-Tick {
 
 # ---------- status ----------
 
+function Get-RollerJsonStatus {
+    $now = (Get-Date).ToUniversalTime()
+    $state = Get-RollerState
+    $userDisabled = Get-UserDisabled -State $state
+    $task = $null
+    $taskState = $null
+    $installed = $false
+    try {
+        $task = Get-ScheduledTask -TaskName $Script:TaskName -ErrorAction SilentlyContinue
+        if ($task) {
+            $installed = $true
+            $taskState = [string]$task.State
+        }
+    } catch {}
+
+    $clients = @()
+    foreach ($name in @('claude', 'codex')) {
+        $client = [ordered]@{
+            name          = $name
+            userDisabled  = ($userDisabled -contains $name)
+            installed     = $false
+            sources       = @()
+            activeSource  = $null
+            windowStart   = $null
+            windowEnd     = $null
+            secondsLeft   = $null
+            pingInSeconds = $null
+            lastPingAt    = $null
+            error         = $null
+        }
+
+        try {
+            if ($client.userDisabled) {
+                $clients += [pscustomobject]$client
+                continue
+            }
+
+            $installs = @(Get-CliInstallations $name)
+            $client.installed = ($installs.Count -gt 0)
+            $client.sources = @($installs | ForEach-Object { $_.source })
+
+            $cliState = Get-CliState -State $state -Name $name
+            if ($cliState.PSObject.Properties['last_ping_at']) {
+                $client.lastPingAt = $cliState.last_ping_at
+            }
+
+            if ($installs.Count -gt 0) {
+                $activeCandidates = @(Select-NextInstall -Installs $installs -CliState $cliState -Now $now)
+                $active = if ($activeCandidates.Count -gt 0) { $activeCandidates[0] } else { $installs[0] }
+                $client.activeSource = $active.source
+
+                $timestamps = if ($name -eq 'claude') { Get-ClaudeUserTimestamps } else { Get-CodexTimestamps }
+                $start = Get-WindowStart -Timestamps $timestamps -Now $now
+                if ($null -ne $start) {
+                    $end = $start.AddMinutes($Script:WindowMinutes)
+                    $left = $end - $now
+                    $pingIn = $left - [timespan]::FromSeconds($Script:PingLeadSec)
+
+                    $client.windowStart = $start.ToString('o')
+                    $client.windowEnd = $end.ToString('o')
+                    $client.secondsLeft = [int][math]::Floor($left.TotalSeconds)
+                    $client.pingInSeconds = [int][math]::Floor($pingIn.TotalSeconds)
+                }
+            }
+        } catch {
+            $client.error = $_.Exception.Message
+        }
+
+        $clients += [pscustomobject]$client
+    }
+
+    return [pscustomobject]@{
+        taskName        = $Script:TaskName
+        installed       = $installed
+        enabled         = (Get-RollerEnabled -State $state)
+        taskState       = $taskState
+        windowMinutes   = $Script:WindowMinutes
+        pingLeadSeconds = $Script:PingLeadSec
+        stateDir        = $Script:StateDir
+        logFile         = $Script:LogFile
+        checkedAt       = $now.ToString('o')
+        clients         = $clients
+    }
+}
+
+function Show-JsonStatus {
+    Get-RollerJsonStatus | ConvertTo-Json -Depth 8 -Compress
+}
+
 function Show-Status {
     $now   = (Get-Date).ToUniversalTime()
     $state = Get-RollerState
     $userDisabled = Get-UserDisabled -State $state
 
     Write-Host ""
+    Write-Host ("Roller: {0}" -f $(if (Get-RollerEnabled -State $state) { 'enabled' } else { 'disabled' })) -ForegroundColor Cyan
+    Write-Host ""
     Write-Host "Detected installations:" -ForegroundColor Cyan
     foreach ($name in @('claude','codex')) {
         if ($userDisabled -contains $name) {
-            Write-Host ("  - {0,-6}  disabled (user said not installed — re-run -Install to reset)" -f $name) -ForegroundColor DarkGray
+            Write-Host ("  - {0,-6}  disabled (user said not installed - re-run -Install to reset)" -f $name) -ForegroundColor DarkGray
             continue
         }
         $installs = Get-CliInstallations $name
@@ -629,7 +740,7 @@ function Show-Status {
     $claudeDesktop = Find-ClaudeDesktopMsix
     if ($claudeDesktop) {
         Write-Host ("    {0,-6}  {1,-32}  {2}" -f 'claude', 'Claude Desktop (Store/MSIX)', $claudeDesktop) -ForegroundColor DarkGray
-        Write-Host "    (GUI app — not pingable; quota shared with Claude Code CLI)" -ForegroundColor DarkGray
+        Write-Host "    (GUI app - not pingable; quota shared with Claude Code CLI)" -ForegroundColor DarkGray
     }
     Write-Host "  Legend: * active source   x skipped (retry after $($Script:FailureRetryMinutes)m)   - disabled by user" -ForegroundColor DarkGray
 
@@ -680,7 +791,7 @@ function Invoke-Install {
         }
         $installs = Get-CliInstallations $name
         if ($installs.Count -gt 0) {
-            Write-Host ("  {0,-6}  found {1} install(s) — using: {2}" -f $name, $installs.Count, $installs[0].source) -ForegroundColor Green
+            Write-Host ("  {0,-6}  found {1} install(s) - using: {2}" -f $name, $installs.Count, $installs[0].source) -ForegroundColor Green
         } else {
             Write-Host ""
             Write-Host ("  {0,-6}  not found automatically." -f $name) -ForegroundColor Yellow
@@ -689,7 +800,7 @@ function Invoke-Install {
             if ($ans -eq 'y' -or $ans -eq 'yes') {
                 Write-Host "         Make sure '$name' is on your PATH and re-run install." -ForegroundColor Yellow
             } else {
-                Write-Host "         OK — $name will be ignored." -ForegroundColor DarkGray
+                Write-Host "         OK - $name will be ignored." -ForegroundColor DarkGray
                 $userDisabled += $name
             }
         }
@@ -753,12 +864,45 @@ function Invoke-Uninstall {
     } else {
         Write-Host "Task '$Script:TaskName' not found."
     }
-    Write-Host "State/logs at $Script:StateDir left intact — delete that folder for a clean removal."
+    Write-Host "State/logs at $Script:StateDir left intact - delete that folder for a clean removal."
+}
+
+function Invoke-Enable {
+    New-Item -ItemType Directory -Force -Path $Script:StateDir | Out-Null
+    $state = Get-RollerState
+    Set-RollerEnabled -State $state -Enabled $true | Out-Null
+    Save-RollerState -State $state
+
+    if (Get-ScheduledTask -TaskName $Script:TaskName -ErrorAction SilentlyContinue) {
+        Enable-ScheduledTask -TaskName $Script:TaskName | Out-Null
+        Start-ScheduledTask -TaskName $Script:TaskName -ErrorAction SilentlyContinue
+        Write-Host "Enabled roller and started scheduled task '$Script:TaskName'." -ForegroundColor Green
+    } else {
+        Write-Host "Enabled roller. Scheduled task '$Script:TaskName' is not installed." -ForegroundColor Yellow
+    }
+}
+
+function Invoke-Disable {
+    New-Item -ItemType Directory -Force -Path $Script:StateDir | Out-Null
+    $state = Get-RollerState
+    Set-RollerEnabled -State $state -Enabled $false | Out-Null
+    Save-RollerState -State $state
+
+    if (Get-ScheduledTask -TaskName $Script:TaskName -ErrorAction SilentlyContinue) {
+        Stop-ScheduledTask -TaskName $Script:TaskName -ErrorAction SilentlyContinue
+        Disable-ScheduledTask -TaskName $Script:TaskName | Out-Null
+        Write-Host "Disabled roller and stopped scheduled task '$Script:TaskName'." -ForegroundColor Green
+    } else {
+        Write-Host "Disabled roller. Scheduled task '$Script:TaskName' is not installed." -ForegroundColor Yellow
+    }
 }
 
 # ---------- dispatch ----------
 
-if     ($Tick)      { Invoke-Tick }
-elseif ($Status)    { Show-Status }
-elseif ($Uninstall) { Invoke-Uninstall }
-else                { Invoke-Install }
+if     ($Tick)       { Invoke-Tick }
+elseif ($Status)     { Show-Status }
+elseif ($JsonStatus) { Show-JsonStatus }
+elseif ($Enable)     { Invoke-Enable }
+elseif ($Disable)    { Invoke-Disable }
+elseif ($Uninstall)  { Invoke-Uninstall }
+else                 { Invoke-Install }
