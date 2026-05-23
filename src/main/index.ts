@@ -8,7 +8,7 @@ import { createUnsupportedAdapter } from './platform/unsupported';
 import { createWindowsAdapter } from './platform/windows';
 import type { PlatformAdapter, RollerStatus } from './platform/types';
 import { formatTrayDetail, formatTrayState, formatTrayTooltip } from './tray';
-import { restoreWindow } from './window';
+import { registerTrayWindowBehavior, restoreWindow } from './window';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -46,11 +46,7 @@ function createWindow(): BrowserWindow {
     }
   });
 
-  win.on('close', (event) => {
-    if (isQuitting) return;
-    event.preventDefault();
-    win.hide();
-  });
+  registerTrayWindowBehavior(win, () => isQuitting);
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -125,6 +121,9 @@ void app.whenReady().then(() => {
   );
 
   registerIpcHandlers(ipcMain, adapter, preferences, monitor);
+  ipcMain.handle('window:minimizeToTray', () => {
+    mainWindow?.hide();
+  });
   mainWindow = createWindow();
   const trayIcon = nativeImage.createFromPath(getTrayIconPath());
   tray = new Tray(trayIcon.isEmpty() ? nativeImage.createEmpty() : trayIcon);

@@ -34,6 +34,7 @@ function mockApi(nextStatus: RollerStatus): void {
     refresh: vi.fn().mockResolvedValue(nextStatus),
     getPreferences: vi.fn().mockResolvedValue(defaultPreferences),
     savePreferences: vi.fn().mockResolvedValue(defaultPreferences),
+    minimizeToTray: vi.fn().mockResolvedValue(undefined),
     onStatus: vi.fn().mockReturnValue(() => undefined)
   };
 }
@@ -122,6 +123,29 @@ describe('App controls', () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Scheduled task access denied.'));
+  });
+
+  it('saves notification settings from the settings UI', async () => {
+    const savedPreferences = { ...defaultPreferences, timeLeftMinutes: 45 };
+    mockApi(status({ installed: true, enabled: true }));
+    window.rollerApi.savePreferences = vi.fn().mockResolvedValue(savedPreferences);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Status refreshed')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Time-left alert minutes'), { target: { value: '45' } });
+
+    await waitFor(() => expect(window.rollerApi.savePreferences).toHaveBeenCalledWith({ timeLeftMinutes: 45 }));
+    expect(screen.getByLabelText('Time-left alert minutes')).toHaveValue(45);
+  });
+
+  it('exposes a minimize to tray control', async () => {
+    mockApi(status({ installed: true, enabled: true }));
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Status refreshed')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /minimize to tray/i }));
+
+    expect(window.rollerApi.minimizeToTray).toHaveBeenCalledOnce();
   });
 
   it('enables uninstall and enable when installed and disabled', async () => {
