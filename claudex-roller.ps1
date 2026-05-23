@@ -838,14 +838,14 @@ function Invoke-Install {
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
     if (Get-ScheduledTask -TaskName $Script:TaskName -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $Script:TaskName -Confirm:$false
+        Unregister-ScheduledTask -TaskName $Script:TaskName -Confirm:$false -ErrorAction Stop
     }
     Register-ScheduledTask -TaskName $Script:TaskName -Action $action -Trigger $logonTrigger `
         -Settings $settings -Principal $principal `
-        -Description 'Keeps Claude Code and Codex 5h usage windows rolling.' | Out-Null
+        -Description 'Keeps Claude Code and Codex 5h usage windows rolling.' -ErrorAction Stop | Out-Null
 
     Write-Host "[3/3] Starting task..." -ForegroundColor Cyan
-    Start-ScheduledTask -TaskName $Script:TaskName
+    Start-ScheduledTask -TaskName $Script:TaskName -ErrorAction Stop
 
     Write-Host ""
     Write-Host "Done. Set and forget." -ForegroundColor Green

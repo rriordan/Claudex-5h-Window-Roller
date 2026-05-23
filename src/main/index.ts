@@ -6,6 +6,7 @@ import { PreferencesStore } from './preferences';
 import { createUnsupportedAdapter } from './platform/unsupported';
 import { createWindowsAdapter } from './platform/windows';
 import type { PlatformAdapter, RollerStatus } from './platform/types';
+import { formatTrayDetail, formatTrayState, formatTrayTooltip } from './tray';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -54,16 +55,13 @@ function createWindow(): BrowserWindow {
 
 function updateTray(adapter: PlatformAdapter, monitor: RollerMonitor): void {
   if (!tray) return;
-  const state = latestStatus
-    ? `${latestStatus.installed ? 'Installed' : 'Not installed'} / ${latestStatus.enabled ? 'Enabled' : 'Disabled'}`
-    : 'Status pending';
-  const timeLeft = latestStatus?.clients.find((client) => client.secondsLeft !== null)?.secondsLeft;
-  const minutesLeft = typeof timeLeft === 'number' ? ` / ${Math.max(0, Math.floor(timeLeft / 60))}m left` : '';
+  const state = formatTrayState(latestStatus);
+  const detail = formatTrayDetail(latestStatus);
 
-  tray.setToolTip(`Claudex Roller - ${state}${minutesLeft}`);
+  tray.setToolTip(formatTrayTooltip(latestStatus));
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open Claudex Roller', click: () => mainWindow?.show() },
-    { label: `${state}${minutesLeft}`, enabled: false },
+    { label: detail ? `${state} / ${detail}` : state, enabled: false },
     { type: 'separator' },
     {
       label: latestStatus?.enabled ? 'Disable' : 'Enable',
