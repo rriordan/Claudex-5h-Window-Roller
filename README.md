@@ -50,6 +50,12 @@ registers a Scheduled Task that fires once a minute at logon, and starts it.
 & "$env:USERPROFILE\.claudex-5h-window-roller\claudex-roller.ps1" -Status
 ```
 
+If install reports `Register-ScheduledTask : Access is denied`, Windows blocked
+current-user scheduled task creation for that session. Run the install from an
+elevated PowerShell session or a desktop user session with scheduled task
+creation rights. Failed task registration exits non-zero and does not mean the
+roller is installed.
+
 You should see something like:
 
 ```
@@ -151,6 +157,9 @@ There is no background process between ticks — just a one-shot scheduled task.
   using Claude/Codex then anyway.
 - **Auto-detects executables.** Works whether `claude` is on PATH or only
   installed via Claude Code desktop (`%APPDATA%\Claude\claude-code\<ver>\claude.exe`).
+- **Scheduled Task rights required.** Local policy, endpoint security, or a
+  restricted shell session can block task creation. Status still works, but
+  install cannot complete until Windows allows creating the task.
 - **Claude.ai web** is out of scope — no local log to read.
 
 ## All flags

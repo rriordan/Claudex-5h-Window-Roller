@@ -1,10 +1,14 @@
 ---
 type: design
-status: draft
-updated_at: 2026-05-20
+status: in_progress
+updated_at: 2026-05-22
 ---
 
 # Electron GUI Design
+
+## Release Alignment
+
+The first packaged Electron implementation shipped as `v0.6.0`. Installed-app smoke testing found stabilization work that belongs in `v0.6.1`, before the roadmap moves to `v0.7.0` visibility and notifications or `v0.8.0` TypeScript core/history work.
 
 ## Goal
 

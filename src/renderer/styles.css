@@ -119,7 +119,7 @@ h3 {
 
 .status-band {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
   margin-top: 26px;
   overflow: hidden;
@@ -189,6 +189,19 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.status-error,
+.client-error {
+  margin-top: 10px;
+  color: #8b321d;
+  overflow-wrap: anywhere;
+}
+
+.status-error {
+  padding-top: 10px;
+  border-top: 1px solid #efd6cc;
+  font-weight: 700;
+}
+
 .setting-row {
   display: grid;
   grid-template-columns: 20px 1fr 84px;
@@ -244,6 +257,29 @@ h3 {
   white-space: nowrap;
 }
 
+.client-details {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0 0;
+}
+
+.client-details div {
+  min-width: 0;
+}
+
+.client-details dt {
+  color: #71685c;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.client-details dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
 .empty-state {
   padding: 18px;
 }
@@ -268,6 +304,15 @@ h3 {
   }
 
   .status-band {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .client-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .client-details {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

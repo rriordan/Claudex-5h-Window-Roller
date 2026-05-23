@@ -47,4 +47,41 @@ describe('selectNotifications', () => {
     ]);
     expect(second).toEqual([]);
   });
+
+  it('gates notifications by preferences', () => {
+    const state = createMonitorState();
+
+    const events = selectNotifications(
+      baseStatus,
+      {
+        ...defaultPreferences,
+        timeLeftNotifications: false,
+        windowEndingNotifications: false,
+        quotaMessageNotifications: false
+      },
+      state,
+      ['line-1']
+    );
+
+    expect(events).toEqual([]);
+  });
+
+  it('uses clear notification copy without exact quota percentages', () => {
+    const state = createMonitorState();
+
+    const events = selectNotifications(baseStatus, defaultPreferences, state, ['line-1']);
+
+    expect(events[0]).toMatchObject({
+      title: 'codex window time low',
+      body: 'codex via PATH has 30 minutes or less remaining in the current 5h window.'
+    });
+    expect(events[1]).toMatchObject({
+      title: 'codex window ending',
+      body: 'codex via PATH is within 10 minutes of the current window ending.'
+    });
+    expect(events[2]).toMatchObject({
+      title: 'Quota message detected',
+      body: expect.stringContaining('not an exact usage percentage')
+    });
+  });
 });

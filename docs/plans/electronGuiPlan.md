@@ -1,10 +1,14 @@
 ---
 type: plan
-status: draft
-updated_at: 2026-05-20
+status: in_progress
+updated_at: 2026-05-22
 ---
 
 # Electron GUI Implementation Plan
+
+## Release Alignment
+
+This plan produced the shipped `v0.6.0` Electron desktop app. Remaining work is tracked as `v0.6.1` installed-app stabilization in `docs/plans/releaseRoadmap.md`.
 
 ## Source Design
 
@@ -15,8 +19,8 @@ Implement the approved design in:
 ## Current Repo Facts
 
 - Existing behavior lives in `claudex-roller.ps1`.
-- Current script flags are `-Install`, `-Uninstall`, `-Status`, and `-Tick`.
-- No Node, Electron, or app packaging files exist yet.
+- Current script flags include `-Install`, `-Uninstall`, `-Status`, `-Tick`, `-Enable`, `-Disable`, and `-JsonStatus`.
+- Node, Electron, React, TypeScript, Vitest, and NSIS packaging files exist.
 - The Electron app must be Windows-capable first, with unsupported macOS/Linux adapters.
 - The background tray monitor must continue after the main window is closed.
 

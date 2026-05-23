@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../../src/renderer/App';
 import type { RollerStatus } from '../../src/main/platform/types';
@@ -58,6 +58,22 @@ describe('App controls', () => {
     expect(screen.getByRole('button', { name: /^disable/i })).toBeDisabled();
   });
 
+  it('shows command stderr when install fails', async () => {
+    mockApi(status({ installed: false, enabled: false }));
+    window.rollerApi.install = vi.fn().mockResolvedValue({
+      ok: false,
+      stdout: '',
+      stderr: 'Register-ScheduledTask : Access is denied.',
+      error: 'Command failed'
+    });
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Status refreshed')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^install$/i }));
+
+    await waitFor(() => expect(screen.getByText('Register-ScheduledTask : Access is denied.')).toBeInTheDocument());
+  });
+
   it('enables uninstall and disable when installed and enabled', async () => {
     mockApi(status({ installed: true, enabled: true }));
     render(<App />);
@@ -67,6 +83,45 @@ describe('App controls', () => {
     expect(screen.getByRole('button', { name: /^uninstall$/i })).toBeEnabled();
     expect(screen.getByRole('button', { name: /^enable/i })).toBeDisabled();
     expect(screen.getByRole('button', { name: /^disable/i })).toBeEnabled();
+  });
+
+  it('shows task state and client timing details', async () => {
+    mockApi(status({
+      installed: true,
+      enabled: true,
+      taskState: 'Ready',
+      clients: [
+        {
+          name: 'codex',
+          userDisabled: false,
+          installed: true,
+          sources: ['WSL (Ubuntu)', 'PATH'],
+          activeSource: 'WSL (Ubuntu)',
+          windowStart: '2026-05-20T00:00:00.000Z',
+          windowEnd: '2026-05-20T05:00:00.000Z',
+          secondsLeft: 5400,
+          pingInSeconds: 120,
+          lastPingAt: '2026-05-20T04:00:00.000Z',
+          error: null
+        }
+      ]
+    }));
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText('Status refreshed')).toBeInTheDocument());
+    expect(screen.getByText('Installed, enabled')).toBeInTheDocument();
+    expect(screen.getByText('Ready')).toBeInTheDocument();
+    expect(screen.getAllByText('WSL (Ubuntu)').length).toBeGreaterThan(0);
+    expect(screen.getByText('Window end')).toBeInTheDocument();
+    expect(screen.getByText('Next ping')).toBeInTheDocument();
+    expect(screen.getByText('2m')).toBeInTheDocument();
+  });
+
+  it('renders status errors as alerts', async () => {
+    mockApi(status({ error: 'Scheduled task access denied.' }));
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Scheduled task access denied.'));
   });
 
   it('enables uninstall and enable when installed and disabled', async () => {

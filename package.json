@@ -1,6 +1,6 @@
 {
   "name": "claudex-5h-window-roller",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Desktop control panel for keeping Codex and Claude 5-hour usage windows rolling.",
   "author": "Robert Riordan",
   "main": "out/main/index.js",
@@ -9,6 +9,8 @@
     "dev": "node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:powershell": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Get-ChildItem tests/powershell/*.ps1 | ForEach-Object { & $_.FullName }\"",
+    "test:all": "npm run typecheck && npm test && npm run test:powershell",
     "build": "node scripts/build.mjs",
     "predist": "npm run build",
     "dist": "electron-builder --win nsis"

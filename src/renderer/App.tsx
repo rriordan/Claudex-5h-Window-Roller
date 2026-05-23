@@ -55,6 +55,24 @@ function formatTimeLeft(seconds: number | null): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
+function formatTimestamp(value: string | null): string {
+  if (value === null) return 'Not scheduled';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+function formatPing(seconds: number | null): string {
+  if (seconds === null) return 'No ping queued';
+  if (seconds <= 0) return 'Due now';
+  return formatTimeLeft(seconds);
+}
+
 function statusLabel(status: RollerStatus): string {
   if (!status.supported) return 'Unsupported platform';
   if (!status.installed) return 'Not installed';
@@ -91,7 +109,7 @@ export function App(): ReactElement {
     setBusy(label);
     try {
       const result = await action();
-      if ('ok' in result && !result.ok) setMessage(result.error ?? result.stderr ?? `${label} failed`);
+      if ('ok' in result && !result.ok) setMessage(result.stderr || result.error || `${label} failed`);
       else setMessage(`${label} complete`);
       setStatus(await api.getStatus());
     } catch (error) {
@@ -132,6 +150,10 @@ export function App(): ReactElement {
           <strong>{formatTimeLeft(bestClient?.secondsLeft ?? null)}</strong>
         </div>
         <div>
+          <span>Roller</span>
+          <strong>{status.installed ? (status.enabled ? 'Installed, enabled' : 'Installed, disabled') : 'Not installed'}</strong>
+        </div>
+        <div>
           <span>Active source</span>
           <strong>{bestClient?.activeSource ?? 'None'}</strong>
         </div>
@@ -168,6 +190,7 @@ export function App(): ReactElement {
             </button>
           </div>
           <p className="message-line">{message}</p>
+          {status.error && <p className="status-error" role="alert">{status.error}</p>}
         </div>
 
         <div className="panel">
@@ -225,6 +248,25 @@ export function App(): ReactElement {
             <div>
               <h3>{client.name}</h3>
               <p>{client.sources.length > 0 ? client.sources.join(', ') : 'No source detected'}</p>
+              <dl className="client-details">
+                <div>
+                  <dt>Active</dt>
+                  <dd>{client.activeSource ?? 'None'}</dd>
+                </div>
+                <div>
+                  <dt>Window end</dt>
+                  <dd>{formatTimestamp(client.windowEnd)}</dd>
+                </div>
+                <div>
+                  <dt>Next ping</dt>
+                  <dd>{formatPing(client.pingInSeconds)}</dd>
+                </div>
+                <div>
+                  <dt>Last ping</dt>
+                  <dd>{formatTimestamp(client.lastPingAt)}</dd>
+                </div>
+              </dl>
+              {client.error && <p className="client-error">{client.error}</p>}
             </div>
             <strong>{formatTimeLeft(client.secondsLeft)}</strong>
           </article>

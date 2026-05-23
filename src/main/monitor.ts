@@ -20,6 +20,10 @@ export function createMonitorState(): MonitorState {
   return { sent: new Set<string>() };
 }
 
+function clientLabel(client: RollerStatus['clients'][number]): string {
+  return `${client.name}${client.activeSource ? ` via ${client.activeSource}` : ''}`;
+}
+
 export function selectNotifications(
   status: RollerStatus,
   preferences: NotificationPreferences,
@@ -38,7 +42,7 @@ export function selectNotifications(
         events.push({
           id,
           title: `${client.name} window time low`,
-          body: `${preferences.timeLeftMinutes} minutes or less remain in the current window.`
+          body: `${clientLabel(client)} has ${preferences.timeLeftMinutes} minutes or less remaining in the current 5h window.`
         });
       }
     }
@@ -50,7 +54,7 @@ export function selectNotifications(
         events.push({
           id,
           title: `${client.name} window ending`,
-          body: `${preferences.windowEndingMinutes} minutes or less remain before this window ends.`
+          body: `${clientLabel(client)} is within ${preferences.windowEndingMinutes} minutes of the current window ending.`
         });
       }
     }
@@ -63,8 +67,8 @@ export function selectNotifications(
         state.sent.add(id);
         events.push({
           id,
-          title: 'Usage limit signal detected',
-          body: 'A recent log line matched a usage or quota limit message.'
+          title: 'Quota message detected',
+          body: 'A recent local log line matched usage-limit wording. Treat this as a quota-message alert, not an exact usage percentage.'
         });
       }
     }
