@@ -25,6 +25,10 @@
       {
         "from": "claudex-roller.ps1",
         "to": "claudex-roller.ps1"
+      },
+      {
+        "from": "assets/icon.ico",
+        "to": "assets/icon.ico"
       }
     ],
     "win": {

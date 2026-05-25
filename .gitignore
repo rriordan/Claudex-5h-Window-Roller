@@ -1,7 +1,9 @@
 *.log
 .claude/
+.omx/
 node_modules/
 out/
 dist/
 coverage/
 .vite/
+/index.js

@@ -10,6 +10,7 @@ const api = {
   refresh: () => ipcRenderer.invoke('roller:refresh'),
   getPreferences: () => ipcRenderer.invoke('preferences:get'),
   savePreferences: (partial: Partial<NotificationPreferences>) => ipcRenderer.invoke('preferences:save', partial),
+  minimizeToTray: () => ipcRenderer.invoke('window:minimizeToTray'),
   onStatus: (callback: (status: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, status: unknown): void => callback(status);
     ipcRenderer.on('roller:status', listener);

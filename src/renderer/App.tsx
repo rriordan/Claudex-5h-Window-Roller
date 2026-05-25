@@ -1,4 +1,4 @@
-import { Bell, BellRing, CheckCircle2, Download, Power, RefreshCw, Trash2 } from 'lucide-react';
+import { Bell, BellRing, CheckCircle2, Download, Minus, Power, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
 import type { NotificationPreferences } from '../main/preferences';
@@ -13,6 +13,7 @@ type RollerApi = {
   refresh(): Promise<RollerStatus>;
   getPreferences(): Promise<NotificationPreferences>;
   savePreferences(partial: Partial<NotificationPreferences>): Promise<NotificationPreferences>;
+  minimizeToTray(): Promise<void>;
   onStatus(callback: (status: RollerStatus) => void): () => void;
 };
 
@@ -138,9 +139,14 @@ export function App(): ReactElement {
           <p className="eyebrow">Claudex Roller</p>
           <h1>5h Window Control</h1>
         </div>
-        <div className={`state-pill ${status.enabled ? 'is-enabled' : 'is-disabled'}`}>
-          <CheckCircle2 size={17} />
-          <span>{statusLabel(status)}</span>
+        <div className="top-actions">
+          <button className="tray-button" type="button" onClick={() => void api.minimizeToTray()}>
+            <Minus size={17} /> Minimize to tray
+          </button>
+          <div className={`state-pill ${status.enabled ? 'is-enabled' : 'is-disabled'}`}>
+            <CheckCircle2 size={17} />
+            <span>{statusLabel(status)}</span>
+          </div>
         </div>
       </section>
 
@@ -195,7 +201,7 @@ export function App(): ReactElement {
 
         <div className="panel">
           <div className="panel-heading">
-            <h2>Notifications</h2>
+            <h2>Settings</h2>
             <BellRing size={19} />
           </div>
           <label className="setting-row">

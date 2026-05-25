@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, Tray } from 'electron';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { registerIpcHandlers } from './ipc';
 import { RollerMonitor } from './monitor';
@@ -7,6 +8,7 @@ import { createUnsupportedAdapter } from './platform/unsupported';
 import { createWindowsAdapter } from './platform/windows';
 import type { PlatformAdapter, RollerStatus } from './platform/types';
 import { formatTrayDetail, formatTrayState, formatTrayTooltip } from './tray';
+import { registerTrayWindowBehavior, restoreWindow } from './window';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -16,6 +18,12 @@ let latestStatus: RollerStatus | null = null;
 function getScriptPath(): string {
   if (app.isPackaged) return join(process.resourcesPath, 'claudex-roller.ps1');
   return join(app.getAppPath(), 'claudex-roller.ps1');
+}
+
+function getTrayIconPath(): string {
+  const packagedIconPath = join(process.resourcesPath, 'assets', 'icon.ico');
+  if (app.isPackaged || existsSync(packagedIconPath)) return packagedIconPath;
+  return join(app.getAppPath(), 'assets', 'icon.ico');
 }
 
 function createAdapter(): PlatformAdapter {
@@ -38,11 +46,7 @@ function createWindow(): BrowserWindow {
     }
   });
 
-  win.on('close', (event) => {
-    if (isQuitting) return;
-    event.preventDefault();
-    win.hide();
-  });
+  registerTrayWindowBehavior(win, () => isQuitting);
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL);
@@ -60,7 +64,7 @@ function updateTray(adapter: PlatformAdapter, monitor: RollerMonitor): void {
 
   tray.setToolTip(formatTrayTooltip(latestStatus));
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open Claudex Roller', click: () => mainWindow?.show() },
+    { label: 'Open Claudex Roller', click: () => restoreWindow(mainWindow) },
     { label: detail ? `${state} / ${detail}` : state, enabled: false },
     { type: 'separator' },
     {
@@ -86,7 +90,18 @@ function updateTray(adapter: PlatformAdapter, monitor: RollerMonitor): void {
 
 app.setAppUserModelId('com.rriordan.claudex-5h-window-roller');
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    restoreWindow(mainWindow);
+  });
+}
+
 void app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
+
   const adapter = createAdapter();
   const preferences = new PreferencesStore(join(app.getPath('userData'), 'preferences.json'));
   const monitor = new RollerMonitor(
@@ -106,14 +121,19 @@ void app.whenReady().then(() => {
   );
 
   registerIpcHandlers(ipcMain, adapter, preferences, monitor);
+  ipcMain.handle('window:minimizeToTray', () => {
+    mainWindow?.hide();
+  });
   mainWindow = createWindow();
-  tray = new Tray(nativeImage.createEmpty());
+  const trayIcon = nativeImage.createFromPath(getTrayIconPath());
+  tray = new Tray(trayIcon.isEmpty() ? nativeImage.createEmpty() : trayIcon);
   updateTray(adapter, monitor);
   monitor.start();
+  restoreWindow(mainWindow);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
-    else mainWindow?.show();
+    restoreWindow(mainWindow);
   });
 });
 

@@ -65,6 +65,17 @@ button:disabled {
   gap: 24px;
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tray-button {
+  min-height: 38px;
+  padding: 0 12px;
+}
+
 .eyebrow {
   margin: 0 0 4px;
   color: #71685c;
@@ -301,6 +312,11 @@ h3 {
   .top-strip {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .top-actions {
+    align-items: flex-start;
+    flex-direction: column-reverse;
   }
 
   .status-band {
