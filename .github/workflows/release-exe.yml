@@ -1,0 +1,105 @@
+name: Build and Release Windows EXE
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the v prefix. Leave blank to use package.json."
+        required: false
+        type: string
+      make_latest:
+        description: "Mark this release as the latest release."
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-exe
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          $inputVersion = "${{ inputs.version }}".Trim()
+          if ($inputVersion) {
+            $version = $inputVersion.TrimStart("v")
+            npm version $version --no-git-tag-version
+          } else {
+            $package = Get-Content package.json -Raw | ConvertFrom-Json
+            $version = $package.version
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build installer
+        run: npm run dist
+
+      - name: Normalize artifact names
+        id: artifacts
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $sourceExe = "dist/Claudex 5h Window Roller Setup $version.exe"
+          $sourceBlockmap = "$sourceExe.blockmap"
+          $exe = "dist/Claudex.5h.Window.Roller.Setup.$version.exe"
+          $blockmap = "$exe.blockmap"
+          Move-Item -Force $sourceExe $exe
+          Move-Item -Force $sourceBlockmap $blockmap
+          "exe=$exe" >> $env:GITHUB_OUTPUT
+          "blockmap=$blockmap" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Claudex-5h-Window-Roller-${{ steps.version.outputs.version }}
+          path: |
+            ${{ steps.artifacts.outputs.exe }}
+            ${{ steps.artifacts.outputs.blockmap }}
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          $version = "${{ steps.version.outputs.version }}"
+          $args = @(
+            "release", "create", $tag,
+            "${{ steps.artifacts.outputs.exe }}",
+            "${{ steps.artifacts.outputs.blockmap }}",
+            "--target", $env:GITHUB_SHA,
+            "--title", "v$version",
+            "--notes", "Windows installer release for v$version."
+          )
+          if ("${{ inputs.make_latest }}" -eq "true") {
+            $args += "--latest"
+          }
+          gh @args
